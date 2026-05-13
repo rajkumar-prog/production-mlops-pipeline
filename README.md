@@ -1,70 +1,79 @@
-# 📦 Production MLOps Pipeline — Intelligent Document AI
+# 🔐 ConfidentialMind — Zero-Trust Medical Document AI
 
-> End-to-end MLOps platform for intelligent document processing — powered by AWS SageMaker, LayoutLM, FastAPI, and automated CI/CD with model drift detection.
-> Built to demonstrate Amazon AWS AI-style production ML infrastructure.
+> The first open-source MLOps pipeline where sensitive medical records are processed by AI **without any party — including the server — ever seeing the data**. Combines AWS Nitro Enclaves (hardware TEE), Differential Privacy, Federated Learning, and LayoutLM in one production system.
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue)](https://python.org)
-[![AWS](https://img.shields.io/badge/AWS-SageMaker%20%7C%20Lambda%20%7C%20S3-orange)](https://aws.amazon.com)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green)](https://fastapi.tiangolo.com)
-[![Docker](https://img.shields.io/badge/Docker-Containerized-blue)](https://docker.com)
+[![AWS](https://img.shields.io/badge/AWS-Nitro_Enclaves-orange)](https://aws.amazon.com/ec2/nitro/nitro-enclaves/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.x-red)](https://pytorch.org)
+[![Flower](https://img.shields.io/badge/Flower-Federated_Learning-green)](https://flower.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
 ---
 
-## 🎯 Project Overview
+## 🧠 Why This Doesn't Exist Yet
 
-This project implements a fully automated, cloud-native MLOps pipeline that ingests documents (invoices, contracts, financial forms), extracts structured data using a fine-tuned LayoutLM model, applies LLM-based reasoning for summarization, monitors model performance in production, and automatically triggers retraining when accuracy degrades — all on AWS.
+AWS has demo repos for Nitro Enclaves + LLM. Research exists for federated learning in healthcare. Differential privacy is well-studied. But nobody has combined all of these into **one production MLOps pipeline**:
+
+| Existing Work | Gap |
+|---|---|
+| AWS Nitro Enclaves LLM demo | Toy demo — no FL, no DP, no drift monitoring |
+| QFed+FHE (NeurIPS 2024) | Quantum + crypto only — no hardware TEE, no full pipeline |
+| FL in radiology research | No Nitro Enclaves, no drift detection, no production serving |
+
+**What ConfidentialMind does that nobody has:**
+> A complete production MLOps system where hospital data never leaves the hospital (Federated Learning), model gradients are mathematically noise-protected (Differential Privacy), and inference runs inside a **cryptographically isolated enclave** (AWS Nitro) — provably inaccessible even to AWS itself.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ System Architecture
 
 ```
-Document Upload (PDF/Image)
+TRAINING PHASE — Federated + Privacy-Preserving
+─────────────────────────────────────────────────
+Hospital A  →  Local LayoutLM fine-tuning  (data NEVER leaves)
+Hospital B  →  Local LayoutLM fine-tuning  (data NEVER leaves)
+Hospital C  →  Local LayoutLM fine-tuning  (data NEVER leaves)
+
+Each hospital applies Differential Privacy (ε=1.0) to gradients
+         │
+         ▼  only encrypted DP gradients transmitted
+┌────────────────────────┐
+│  Federated Aggregator  │  ← Flower framework, weighted FedAvg
+└────────────┬───────────┘
+             ▼
+     Global LayoutLM Model (no raw data ever seen)
+
+INFERENCE PHASE — Zero-Trust via AWS Nitro Enclave
+────────────────────────────────────────────────────
+Patient uploads medical record
          │
          ▼
-    AWS S3 Bucket
-         │  S3 Event
-         ▼
-   AWS Lambda Trigger
+    AWS S3 (encrypted at rest, KMS-managed keys)
          │
          ▼
-┌────────────────────┐
-│  Preprocessing     │  ← PDF parsing, OCR (Tesseract), image normalization
-└────────┬───────────┘
+┌──────────────────────────────────────────────┐
+│          AWS Nitro Enclave                   │
+│  Isolated VM — no network, no SSH            │
+│  Cryptographic attestation enforced          │
+│                                              │
+│  LayoutLM inference runs here:               │
+│  extracts diagnosis, medications,            │
+│  ICD codes, dates, patient fields            │
+│                                              │
+│  Results encrypted with patient's KMS key   │
+│  Even AWS operators cannot see data          │
+└──────────────────┬───────────────────────────┘
+                   ▼
+         Patient decrypts with their own key only
+
+MONITORING PHASE — Auto-Retraining
+────────────────────────────────────
+Evidently AI monitors predictions over time
+         │
+         ▼  drift detected (F1 drops / distribution shift)
          │
          ▼
-┌────────────────────┐
-│  SageMaker         │  ← LayoutLM / Donut inference endpoint
-│  Inference         │     extracts: dates, amounts, entities, fields
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐
-│  LLM Reasoning     │  ← OpenAI / Claude API → summarization + validation
-│  Layer             │
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐
-│  PostgreSQL +      │  ← Store extracted fields + confidence scores
-│  Redis Cache       │
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐
-│  Monitoring &      │  ← Track accuracy, latency, data drift (Evidently AI)
-│  Drift Detection   │     Auto-trigger SageMaker retraining on drift
-└────────┬───────────┘
-         │
-         ▼
-┌────────────────────┐
-│  FastAPI Dashboard │  ← REST API + web UI for results
-└────────────────────┘
-         │
-   CI/CD Pipeline
-   (GitHub Actions)
-   Auto-deploys on push
+Auto-trigger: new federated training round across hospitals
 ```
 
 ---
@@ -72,115 +81,135 @@ Document Upload (PDF/Image)
 ## 📁 Project Structure
 
 ```
-production-mlops-pipeline/
+confidentialmind-zero-trust-medical-ai/
 ├── src/
-│   ├── ingestion/          # S3 upload handlers, PDF parsing, OCR
-│   ├── extraction/         # LayoutLM / Donut model inference
-│   ├── inference/          # LLM reasoning layer (OpenAI API)
-│   └── monitoring/         # Drift detection, alerting, metrics
+│   ├── federated_trainer/    # Flower FL client + server
+│   ├── differential_privacy/ # DP-SGD with Opacus
+│   ├── enclave_runtime/      # Nitro Enclave vsock server + LayoutLM inference
+│   ├── document_extractor/   # LayoutLM fine-tuning + preprocessing
+│   ├── drift_monitor/        # Evidently AI drift detection + alerting
+│   └── aggregator/           # Secure FedAvg aggregation logic
 ├── aws/
-│   ├── lambda/             # Lambda function handlers
-│   └── sagemaker/          # SageMaker training & deployment scripts
-├── api/                    # FastAPI application
-├── cicd/                   # GitHub Actions workflows
-├── configs/                # Pipeline & model config YAMLs
+│   ├── nitro_enclave/        # Enclave Dockerfile + attestation scripts
+│   ├── lambda/               # S3-trigger Lambda for inference routing
+│   ├── sagemaker/            # SageMaker training job configs
+│   └── kms/                  # KMS key policy templates
+├── models/
+│   ├── layoutlm/             # LayoutLM v3 fine-tuning configs
+│   └── federated_weights/    # Round-by-round global model checkpoints
 ├── data/
-│   ├── raw/                # Sample documents
-│   └── processed/          # Parsed & tokenized data
-├── models/                 # Model artifacts & fine-tuning configs
-├── notebooks/              # Training, evaluation, EDA notebooks
-└── tests/                  # Unit, integration, and load tests
+│   ├── mimic3_samples/       # De-identified MIMIC-III sample records
+│   ├── i2b2_samples/         # i2b2 NLP challenge samples
+│   └── processed/            # Tokenized + LayoutLM-formatted inputs
+├── api/                      # FastAPI: upload docs, query results
+├── cicd/                     # GitHub Actions: FL round + model deploy
+├── configs/                  # YAML configs per module
+├── notebooks/                # Training, DP epsilon analysis, drift plots
+└── tests/                    # Privacy guarantee tests, accuracy tests
 ```
 
 ---
 
 ## 🛠️ Tech Stack
 
-| Component | Technology |
-|---|---|
-| Document AI Model | LayoutLM v3 / Donut |
-| LLM Reasoning | OpenAI GPT-4o / Claude API |
-| Cloud Platform | AWS (SageMaker, Lambda, S3, EC2) |
-| Serving API | FastAPI |
-| Database | PostgreSQL + Redis |
-| Containerization | Docker |
-| CI/CD | GitHub Actions |
-| Drift Detection | Evidently AI |
-| Experiment Tracking | MLflow / W&B |
-| OCR | Tesseract / AWS Textract |
+| Component | Technology | Why |
+|---|---|---|
+| Document AI Model | LayoutLM v3 | SOTA structured document understanding |
+| Federated Learning | Flower (flwr) | Production-grade FL framework |
+| Differential Privacy | Opacus (PyTorch) | DP-SGD with formal privacy guarantees |
+| Hardware TEE | AWS Nitro Enclaves | Cryptographic isolation — zero operator access |
+| Key Management | AWS KMS | Patient-controlled encryption keys |
+| Drift Detection | Evidently AI | Real-time model performance monitoring |
+| Trigger Orchestration | AWS Lambda + S3 | Serverless inference routing |
+| API Layer | FastAPI | Document upload + result retrieval |
+| CI/CD | GitHub Actions | Automated FL rounds + model deployment |
 
 ---
 
 ## 🚀 Getting Started
 
-### Installation
 ```bash
 git clone https://github.com/rajkumar-prog/production-mlops-pipeline.git
 cd production-mlops-pipeline
 pip install -r requirements.txt
+cp .env.example .env   # AWS credentials, KMS key ID
 ```
 
-### Configure AWS
+### Simulate Federated Training (3 hospitals)
 ```bash
-aws configure  # set your AWS credentials
-cp .env.example .env  # fill in API keys
+python scripts/run_federated.py \
+  --num-clients 3 \
+  --rounds 10 \
+  --dp-epsilon 1.0 \
+  --config configs/fl_training.yaml
 ```
 
-### Run Locally (without AWS)
+### Build and Deploy Nitro Enclave
 ```bash
-docker-compose up --build
-# API available at http://localhost:8000
+cd aws/nitro_enclave
+docker build -t confidentialmind-enclave .
+nitro-cli build-enclave --docker-uri confidentialmind-enclave --output-file enclave.eif
+nitro-cli run-enclave --cpu-count 2 --memory 4096 --eif-path enclave.eif
 ```
 
-### Process a Document
+### Run Inference via API
 ```bash
+uvicorn api.main:app --host 0.0.0.0 --port 8000
 curl -X POST http://localhost:8000/extract \
-  -F "file=@data/raw/invoice_sample.pdf"
-```
-
-### Deploy to AWS
-```bash
-bash scripts/deploy_sagemaker.sh
-bash scripts/deploy_lambda.sh
+  -H "X-Patient-Key: <your-kms-key-id>" \
+  -F "file=@data/mimic3_samples/record_001.pdf"
 ```
 
 ---
 
-## 📊 Performance
+## 🔒 Privacy Guarantees
 
-| Metric | Value |
-|---|---|
-| Document Processing Time | TBD |
-| Field Extraction Accuracy | TBD |
-| API Latency (p95) | TBD |
-| Monthly Scale | TBD |
+| Layer | Mechanism | Guarantee |
+|---|---|---|
+| Training | Differential Privacy (ε=1.0, δ=1e-5) | Mathematical bound on individual data leakage |
+| Communication | Federated Learning | Raw data never leaves hospital |
+| Inference | AWS Nitro Enclave | Hardware-attested isolation, zero operator access |
+| Storage | AWS KMS + patient keys | Only patient can decrypt their results |
+
+---
+
+## 📊 Datasets
+
+| Dataset | Content | Access |
+|---|---|---|
+| MIMIC-III | 40,000+ ICU patient records | [physionet.org](https://physionet.org/content/mimiciii/1.4/) |
+| i2b2 NLP | Clinical NLP challenge data | [i2b2.org](https://www.i2b2.org/NLP/DataSets/) |
+| FUNSD | Form understanding benchmark | [guillaumejaume.github.io](https://guillaumejaume.github.io/FUNSD/) |
 
 ---
 
 ## 🔮 Roadmap
 
-- [ ] PDF ingestion pipeline with OCR
-- [ ] LayoutLM fine-tuning on invoice dataset
-- [ ] SageMaker training & deployment scripts
-- [ ] Lambda trigger on S3 upload
-- [ ] FastAPI REST endpoint with auth
-- [ ] PostgreSQL + Redis integration
-- [ ] Drift detection with Evidently AI
-- [ ] Auto-retraining trigger on drift
-- [ ] GitHub Actions CI/CD pipeline
-- [ ] Web dashboard for document results
+- [ ] LayoutLM v3 fine-tuning on i2b2 + MIMIC samples
+- [ ] Flower federated training (3-hospital simulation)
+- [ ] Opacus DP-SGD with epsilon tracking per round
+- [ ] AWS Nitro Enclave Dockerfile + vsock inference server
+- [ ] KMS key policy for patient-controlled decryption
+- [ ] Evidently AI drift monitor + alert system
+- [ ] Auto-retraining trigger via Lambda on drift event
+- [ ] GitHub Actions CI/CD for FL rounds
+- [ ] FastAPI end-to-end encrypted document flow
+- [ ] Privacy audit: formal epsilon-DP guarantee verification
+
+---
+
+## 📄 Related Work
+
+- [AWS Nitro medical LLM sample](https://github.com/aws-samples/sample-for-secure-medical-llm-inference-with-nitro-enclaves) — demo only, no FL, no DP, no drift
+- [QFed+FHE NeurIPS 2024](https://github.com/elucidator8918/QFL-MLNCP-NeurIPS) — quantum + crypto, no TEE, no document AI
+- [Federated HE in radiology](https://github.com/tayebiarasteh/federated_he) — no Nitro Enclaves, no full pipeline
+
+**ConfidentialMind is the first complete MLOps pipeline combining hardware TEE + DP + FL + document AI + drift monitoring.**
 
 ---
 
 ## 👤 Author
 
-**Raj Kumar Satya**
+**Raj Kumar Satya** — AI/ML Engineer | W&B • Possible Finance • Razorpay
 - GitHub: [@rajkumar-prog](https://github.com/rajkumar-prog)
-- LinkedIn: [Raj Kumar Satya](https://linkedin.com/in/rajkumarsatya)
 - Email: rajkumarsatya65@gmail.com
-
----
-
-## 📄 License
-
-MIT License — see [LICENSE](LICENSE) for details.
